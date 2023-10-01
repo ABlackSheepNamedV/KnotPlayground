@@ -168,6 +168,7 @@ class Knot3D:
     
         return
 
+
 # k = Knot3D([9])
 # k = Knot3D([5,4])
 # k = Knot3D([2,1,3,1,2])
@@ -184,7 +185,6 @@ for i in range(len(k.paths)):
     height = k.heights[i]
     altPath = sphereBezier(path, t) 
     altPath *= 1 + (0.1 * np.cos(t * np.pi) * height[0])
-#     print(np.cos(t * np.pi) * height[0])
 
 
     ax.plot(altPath[0], altPath[1], altPath[2], color="black")
@@ -193,3 +193,8 @@ h = 1.2
 ax.set_xlim3d([-h,h])
 ax.set_ylim3d([-h,h])
 ax.set_zlim3d([-1,1])
+
+
+modifiedCode = str(k.code).replace(" ","").replace(",","")
+plt.title("Plot of knot with Conway code "+modifiedCode)
+plt.show()
