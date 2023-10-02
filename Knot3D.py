@@ -76,7 +76,7 @@ class Tangle3D:
         
         return
     
-    def addTwist(self):
+    def addTwist(self, negate=False):
         
         t = (self.crossingIndex)*self.rotationStep
         SWNE_cross = np.array([[np.cos(t), np.sin(t), 0,  1]]).T
@@ -96,6 +96,15 @@ class Tangle3D:
         
         SE_cont = rotCrossingNeg @ controlDist_lower
         NW_cont = rot180 @ SE_cont        
+        
+        if negate:
+            flipCrossing = np.diag([1,1,1,-1])
+            SWNE_cross = flipCrossing @ SWNE_cross
+            NWSE_cross = flipCrossing @ NWSE_cross
+            NE_cont = flipCrossing @ NE_cont
+            NW_cont = flipCrossing @ NW_cont
+            SE_cont = flipCrossing @ SE_cont
+            SW_cont = flipCrossing @ SW_cont
         
         # Modify the paths used within the knot
         if self.crossingIndex == 0:
@@ -135,15 +144,68 @@ class Tangle3D:
         
         return
     
+    def addTangle(self, otherTangle):
+        
+        if self.rotationStep != otherTangle.rotationStep:
+            raise Exception("Rotation steps between the two tangles disagree.")
+        
+        # Rotate the second tangle over to match ends appropriately:
+        theta = self.crossingIndex * self.rotationStep
+        rotationMatrix = rotMatrix(np.array([[0,0,1,0]]).T, theta)
+        
+        otherTangle.cornerNW = rotationMatrix @ otherTangle.cornerNW
+        otherTangle.cornerNE = rotationMatrix @ otherTangle.cornerNE
+        otherTangle.cornerSW = rotationMatrix @ otherTangle.cornerSW
+        otherTangle.cornerSE = rotationMatrix @ otherTangle.cornerSE
+        otherTangle.paths = [rotationMatrix @ path for path in otherTangle.paths]
+        
+        
+        # Compose the two tangles together:
+        self.paths += [ np.hstack( (self.cornerNE, otherTangle.cornerNW[:,::-1]) ) ]
+        self.paths += [ np.hstack( (self.cornerSE, otherTangle.cornerSW[:,::-1]) ) ]
+        
+        self.cornerNE = otherTangle.cornerNE
+        self.cornerSE = otherTangle.cornerSE
+        self.crossingIndex += otherTangle.crossingIndex
+        self.paths += otherTangle.paths
+                
+        return self
+    
+    def combineEndings(self):
+        
+        self.paths += [ np.hstack( (self.cornerNE, self.cornerNW[:,::-1]) ) ]
+        self.paths += [ np.hstack( (self.cornerSE, self.cornerSW[:,::-1]) ) ]
+        
+        return self
+    
+    def plusOperator(self):
+        self.NW_SE_reflection()
+        self.addTwist()
+        self.NW_SE_reflection()
+        return self
+    
+    def minusOperator(self):
+        self.NW_SE_reflection()
+        self.addTwist(negate=True)
+        self.NW_SE_reflection()
+        return self
+    
+    
     def __add__(self, n):
         
-        if not isinstance(n, int):
-            raise Exception("Cannot add non-integer values to a tangle.")
-        if n < 0:
-            raise Exception("Negative twists have not been added yet.")
+        if isinstance(n, int) and n >= 0:
+            for i in range(n):
+                self.addTwist()
+        
+        elif isinstance(n, int) and n < 0:
+            for i in range(-n):
+                self.addTwist(negate=True)
+        
+        elif isinstance(n, Tangle3D):
+            self.addTangle(n)
             
-        for i in range(n):
-            self.addTwist()
+        else:
+            raise Exception("Only integers and tangles can be added to a tangle.")
             
         return self
     
@@ -151,8 +213,6 @@ class Tangle3D:
         
         if not isinstance(n, int):
             raise Exception("Cannot multiply tangles by non-integer values.")
-        if n < 0:
-            raise Exception("Negative products have not been added yet.")
     
         if self.crossingIndex != 0:
             self.NW_SE_reflection()
@@ -205,8 +265,7 @@ class Knot3D(Tangle3D):
         for t in self.code:
             self *= t
         
-        self.paths += [np.hstack((self.cornerNE, self.cornerNW[:,::-1]))]
-        self.paths += [np.hstack((self.cornerSE, self.cornerSW[:,::-1]))]
+        self.combineEndings()
         
         return
     
@@ -214,31 +273,47 @@ class Knot3D(Tangle3D):
 
 ### Example Usage: #############################################################
 
-# code = [9]
-# code = [5,4]
-code = [2,1,4,2]
-# code = [2,2,1,2,2]
-# code = [2,3,2,2]
+%matplotlib notebook
 
-k = Knot3D(code, crossingAngle=1.0, alpha=1)
+# Forming the knot [211,21,2]
+
+theta = 2*np.pi/9
+k  = (Tangle3D(theta) * 2 * 1) 
+k += (Tangle3D(theta) * 2 * 1) 
+k += (Tangle3D(theta) * 2 * 1).minusOperator()
+k.combineEndings()
 
 fig = plt.figure()
 ax = plt.axes(projection='3d')
 
 t = np.linspace(0,1, 50)
+deltaH = 0.1
 for i in range(len(k.paths)):
     path = k.paths[i]
-    altPath = sphereBezier(path[:3], t) 
-    altPath *= 1 + (0.05 * np.cos(t * np.pi) * path[3,0])
+    altPath = sphereBezier(path[:3], t)
+    
+    if path[3,0] == 1 and path[3,3] == 1:
+        altPath *= 1+deltaH
+    elif path[3,0] == 1 and path[3,3] == -1:
+        altPath *= 1 + deltaH * np.cos(t * np.pi)
+    elif path[3,0] == -1 and path[3,3] == 1:
+        altPath *= 1 + deltaH * np.cos((1-t) * np.pi)
+    else:
+        altPath *= 1-deltaH
+        
 
+    ax.plot(altPath[0], altPath[1], altPath[2], linewidth=3) #, color="black")
 
-    ax.plot(altPath[0], altPath[1], altPath[2], linewidth=3, color="black")
     
 ax.set_xlim3d([-1.3, 1.3])
 ax.set_ylim3d([-1.3, 1.3])
 ax.set_zlim3d([-1  , 1  ])
 
-
-modifiedCode = str(code).replace(" ","").replace(",","")
-plt.title("Plot of knot with Conway code "+modifiedCode)
+plt.title("Plot of knot with Conway code [211,21,2]")
 plt.show()
+
+
+# t1 = Tangle3D(2 * np.pi / 9) * 1 * 2
+# t2 = Tangle3D(2 * np.pi / 9) * 4 * 1
+
+# t1 + t2
