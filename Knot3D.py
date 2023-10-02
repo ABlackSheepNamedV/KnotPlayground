@@ -2,6 +2,10 @@ from mpl_toolkits import mplot3d
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+
+### Helper functions: ##########################################################
+
 def rotMatrix(axis, theta):
     """ Rotate about the specified axis by theta radians, using the right
         hand rule to establish the direction. Assumes axis is a (3,1) array.
@@ -15,15 +19,16 @@ def rotMatrix(axis, theta):
     
     M = np.array([[0,-z,y],[z,0,-x],[-y,x,0]])
     
-    R = (1-c) * axis @ axis.T + c * np.eye(3) + s * M
-    
+    R = np.zeros( (4,4) )
+    R[:3,:3] = (1-c) * axis[:3] @ axis[:3].T + c * np.eye(3) + s * M
+    R[3,3] = 1
     
     return R
 
 def slerp(axis1, axis2, t):
-    """ Computes the slerp (Spherical Linear intERPolation) between the two axes.
-        That is, we find the geodesic path f(t) between the two axes such that
-        f(0)=axis1, f(1)=axis2, and ||f'(t)|| is constant.
+    """ Computes the slerp (Spherical Linear intERPolation) between the two 
+        axes. That is, we find the constant speed path f(t) between the two axes
+        such that f(0)=axis1, f(1)=axis2, ||f(t)|| = 1.
         
         See https://en.wikipedia.org/wiki/Slerp for more details.
     """
@@ -56,145 +61,178 @@ def sphereBezier(path, t):
     return path
 
 
+
+### Knot Implementation: #######################################################
+
 class Knot3D:
+    """ A class that transforms the Conway notation of knots into curves embeded
+        on the unit sphere.
+        
+        The class produces a list of 4x4 matrices representing each curve
+        connecting the different crossings together. For each matrix, the
+        columns represent:
+            - the first crossing
+            - a curve control point for the first crossing
+            - a curve control point for the second crossing
+            - the second crossing
+        in order.
+        
+        The first three rows correspond to the (x,y,z) coordinates of these
+        points. The last row is an indicator of whether the crossing corresponds
+        to an over crossing (+1) or an undercrossing (-1).
+
+        Currently, the code only works for Conway codes that correspond to
+        knots formed by completing rational tangles. 
+    """
+    
     
     def __init__(self, code, alpha=1.0, crossingAngle=np.pi/2):
-        self.cornerNW = None
-        self.cornerNE = None
-        self.cornerSW = None
-        self.cornerSE = None
+        """ Initialize the Knot3D class.
+        
+            Inputs:
+                - code: A list of non-negative integers representing the conway
+                    code of the knot of interest.
+                - alpha: A float describing the spherical distance between the
+                    crossing and the control points compared to the spherical
+                    distance between adjacent crossings.
+                - crossingAngle: A float describing the angle of separation
+                    at each crossing. 
+        """
+        
+        self.code = code
+        self.alpha = alpha
+        self.crossingAngle = crossingAngle
+
         self.paths = []
         
-        self.heights = []
-        self.h = 1
+        self.SW_NE_flip = np.eye(4)
+        self.NW_SE_flip = np.diag([1,1,1,-1])
         
-        self.alpha=alpha
-        self.crossingAngle = crossingAngle
-        
-        self.completedCrossings = 0
-        self.code = code
-        
-        numCrossings = sum(code)
-        self.rotationStep = (2*np.pi/numCrossings)
+        self.crossingIndex = 0
+        self.rotationStep = (2*np.pi/sum(code))
         
         self.constructPoints()
-        
+    
     def addTwist(self):
-        
-        t = (self.completedCrossings)*self.rotationStep
-        crossing = np.array([[np.cos(t),np.sin(t),0]]).T
+        """ A helper function that adds an additional twist (or crossing) to the
+            knot.
 
-        t2 = (self.completedCrossings+self.alpha/2)* self.rotationStep
-        diff = np.array([[np.cos(t2),np.sin(t2),0]]).T
+            Each new crossing is placed at (cos(i * 2pi/n), sin(i*2pi/n), 0)
+            where i is the number of crossings made so far and n is the total
+            number of crossings to be added. 
+        """
+        
+        # Obtain the positions of the crossing:
+        t = (self.crossingIndex)*self.rotationStep
+        crossing = np.array([[np.cos(t), np.sin(t), 0,  1]]).T
+        NWSE_cross = self.NW_SE_flip @ crossing
+        SWNE_cross = self.SW_NE_flip @ crossing
+        
+        # Obtain the positions of the control points:
+        t2 = (self.crossingIndex+self.alpha/2)* self.rotationStep
+        controlDist = np.array([[np.cos(t2), np.sin(t2), 0, 1]]).T
 
-        NE = rotMatrix(crossing,         self.crossingAngle/2) @ diff
-        NW = rotMatrix(crossing, np.pi - self.crossingAngle/2) @ diff
-        SE = rotMatrix(crossing,       - self.crossingAngle/2) @ diff
-        SW = rotMatrix(crossing, np.pi + self.crossingAngle/2) @ diff
+        rot180         = rotMatrix(crossing,  np.pi               )
+        rotCrossing    = rotMatrix(crossing,  self.crossingAngle/2)
+        rotCrossingNeg = rotMatrix(crossing, -self.crossingAngle/2)
         
-        NE_height =  self.h
-        NW_height = -self.h
-        SW_height =  self.h
-        SE_height = -self.h
+        NE_cont =          rotCrossing    @ self.SW_NE_flip @ controlDist
+        NW_cont = rot180 @ rotCrossingNeg @ self.NW_SE_flip @ controlDist
+        SE_cont =          rotCrossingNeg @ self.NW_SE_flip @ controlDist
+        SW_cont = rot180 @ rotCrossing    @ self.SW_NE_flip @ controlDist
         
-        if self.completedCrossings == 0:
-            self.cornerSW = np.hstack((crossing, SW))
-            self.cornerNW = np.hstack((crossing, NW))
-            
-            self.cornerSW_height = SW_height
-            self.cornerNW_height = NW_height
-            
+        
+        # Modify the paths used within the knot
+        if self.crossingIndex == 0:
+            self.cornerSW = np.hstack((NWSE_cross, SW_cont))
+            self.cornerNW = np.hstack((SWNE_cross, NW_cont))
         else:            
-            self.paths += [ np.hstack( (self.cornerNE, NW, crossing) ) ]
-            self.paths += [ np.hstack( (self.cornerSE, SW, crossing) ) ]
+            self.paths += [ np.hstack( (self.cornerNE, NW_cont, SWNE_cross) ) ]
+            self.paths += [ np.hstack( (self.cornerSE, SW_cont, NWSE_cross) ) ]
         
-            self.heights += [ [self.cornerNE_height, NW_height] ]
-            self.heights += [ [self.cornerSE_height, SW_height] ]
-        
-        self.cornerNE = np.hstack( (crossing, NE) )
-        self.cornerSE = np.hstack( (crossing, SE) )
-        
-        self.cornerNE_height = NE_height
-        self.cornerSE_height = SE_height
-            
-        self.completedCrossings += 1
+        self.cornerNE = np.hstack( (NWSE_cross, NE_cont) )
+        self.cornerSE = np.hstack( (SWNE_cross, SE_cont) )
+
+        self.crossingIndex += 1
         
         return
     
+
+
     def addRotate(self):
+        """ A helper function that rotates around the completed crossings about
+            the axis through their mean.
+        """
         
-        #Cycle through the corners:
+        # Cycle around the incomplete curves around the four corners:
         temp = self.cornerNE
         self.cornerNE = self.cornerSE
         self.cornerSE = self.cornerSW
         self.cornerSW = self.cornerNW
         self.cornerNW = temp
         
-        temp = self.cornerNE_height
-        self.cornerNE_height = self.cornerSE_height
-        self.cornerSE_height = self.cornerSW_height
-        self.cornerSW_height = self.cornerNW_height
-        self.cornerNW_height = temp
+        # Rotate all of the completed curves 90 degrees about their center axis.
+        theta = (self.crossingIndex-1)/2 * self.rotationStep
+        rotPoint = np.array([[np.cos(theta), np.sin(theta), 0, 1]]).T
+        centerAxisRotation = rotMatrix(rotPoint, np.pi/2)
+
+        self.cornerNW = centerAxisRotation @ self.cornerNW
+        self.cornerNE = centerAxisRotation @ self.cornerNE
+        self.cornerSW = centerAxisRotation @ self.cornerSW
+        self.cornerSE = centerAxisRotation @ self.cornerSE
+        self.paths = [centerAxisRotation @ path for path in self.paths]
         
-        
-        theta = (self.completedCrossings/2-0.5) * self.rotationStep
-        rotPoint = np.array([[np.cos(theta), np.sin(theta), 0]]).T
-        R = rotMatrix(rotPoint, np.pi/2)
-        
-        self.cornerNW = R @ self.cornerNW
-        self.cornerNE = R @ self.cornerNE
-        self.cornerSW = R @ self.cornerSW
-        self.cornerSE = R @ self.cornerSE
-        
-        self.paths = [R @ path for path in self.paths]
-        
-        self.h *= -1
-        
+        # Alternate the crossing direction
+        self.SW_NE_flip, self.NW_SE_flip = self.NW_SE_flip, self.SW_NE_flip
         
         return
     
     def constructPoints(self):
+        """ Constructs the knot based off of the recorded Conway code.
+        """
         
+        # Construct the knot:
         for t in self.code:
             for i in range(t):
                 self.addTwist()
             self.addRotate()
-        
+
+        # Connect the ends of the paths together:
         self.paths += [np.hstack((self.cornerNE, self.cornerSE[:,::-1]))]
         self.paths += [np.hstack((self.cornerNW, self.cornerSW[:,::-1]))]
-        
-        self.heights += [ [self.cornerNE_height, self.cornerSE_height] ]
-        self.heights += [ [self.cornerSE_height, self.cornerSW_height] ]
     
         return
 
 
-# k = Knot3D([9])
-# k = Knot3D([5,4])
-# k = Knot3D([2,1,3,1,2])
-k = Knot3D([2,2,1,2,2])
-# k = Knot3D([2,3,2,2])
+
+### Example Usage: #############################################################
+
+# code = [9]
+# code = [5,4]
+# code = [2,1,3,1,2]
+code = [2,2,1,2,2]
+# code = [2,3,2,2]
+
+k = Knot3D(code, crossingAngle=1.0, alpha=1)
+
 
 fig = plt.figure()
 ax = plt.axes(projection='3d')
 
 t = np.linspace(0,1, 50)
-
 for i in range(len(k.paths)):
     path = k.paths[i]
-    height = k.heights[i]
-    altPath = sphereBezier(path, t) 
-    altPath *= 1 + (0.1 * np.cos(t * np.pi) * height[0])
+    altPath = sphereBezier(path[:3], t) 
+    altPath *= 1 + (0.025 * np.cos(t * np.pi) * path[3,0])
 
 
-    ax.plot(altPath[0], altPath[1], altPath[2], color="black")
+    ax.plot(altPath[0], altPath[1], altPath[2], linewidth=3, color="black")
     
-h = 1.2
-ax.set_xlim3d([-h,h])
-ax.set_ylim3d([-h,h])
-ax.set_zlim3d([-1,1])
+ax.set_xlim3d([-1.3, 1.3])
+ax.set_ylim3d([-1.3, 1.3])
+ax.set_zlim3d([-1  , 1  ])
 
 
-modifiedCode = str(k.code).replace(" ","").replace(",","")
+modifiedCode = str(code).replace(" ","").replace(",","")
 plt.title("Plot of knot with Conway code "+modifiedCode)
 plt.show()
