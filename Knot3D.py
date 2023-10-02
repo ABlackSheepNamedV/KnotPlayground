@@ -62,9 +62,107 @@ def sphereBezier(path, t):
 
 
 
+### Tangle Implementation: #####################################################
+
+class Tangle3D:
+    
+    def __init__(self, rotationStep, alpha=1, crossingAngle=np.pi/2 ):
+        
+        self.rotationStep = rotationStep
+        self.crossingIndex = 0
+        self.alpha = alpha
+        self.crossingAngle = crossingAngle
+        self.paths = []
+        
+        return
+    
+    def addTwist(self):
+        
+        t = (self.crossingIndex)*self.rotationStep
+        SWNE_cross = np.array([[np.cos(t), np.sin(t), 0,  1]]).T
+        NWSE_cross = np.array([[np.cos(t), np.sin(t), 0, -1]]).T
+        
+        # Obtain the positions of the control points:
+        t2 = (self.crossingIndex+self.alpha/2)* self.rotationStep
+        controlDist_upper = np.array([[np.cos(t2), np.sin(t2), 0,  1]]).T
+        controlDist_lower = np.array([[np.cos(t2), np.sin(t2), 0, -1]]).T
+
+        rot180         = rotMatrix(SWNE_cross,  np.pi               )
+        rotCrossing    = rotMatrix(SWNE_cross,  self.crossingAngle/2)
+        rotCrossingNeg = rotMatrix(SWNE_cross, -self.crossingAngle/2)
+        
+        NE_cont = rotCrossing @ controlDist_upper
+        SW_cont = rot180 @ NE_cont
+        
+        SE_cont = rotCrossingNeg @ controlDist_lower
+        NW_cont = rot180 @ SE_cont        
+        
+        # Modify the paths used within the knot
+        if self.crossingIndex == 0:
+            self.cornerSW = np.hstack((NWSE_cross, SW_cont))
+            self.cornerNW = np.hstack((SWNE_cross, NW_cont))
+        else:            
+            self.paths += [ np.hstack( (self.cornerNE, NW_cont, SWNE_cross) ) ]
+            self.paths += [ np.hstack( (self.cornerSE, SW_cont, NWSE_cross) ) ]
+        
+        self.cornerNE = np.hstack( (NWSE_cross, NE_cont) )
+        self.cornerSE = np.hstack( (SWNE_cross, SE_cont) )
+
+        self.crossingIndex += 1
+        
+        return
+    
+    def NW_SE_reflection(self):
+        """ A helper function that reflects the current knot across the NW-SE
+            diagonal axis.
+        """
+        
+        # Swap NE and SW corners:
+        self.cornerNE, self.cornerSW = self.cornerSW, self.cornerNE
+        
+        # Obtain matrix that flips points along the "main" (NW-SE) diagonal.
+        theta = (self.crossingIndex-1)/2 * self.rotationStep
+        centerAxis = np.array([[np.cos(theta), np.sin(theta), 0, 0]]).T
+        reflectionAxis = rotMatrix(centerAxis, -np.pi/4) @ np.array([[0,0,1,0]]).T
+        reflectionMatrix = np.eye(4) - 2 * reflectionAxis @ reflectionAxis.T
+        
+        # Modify the incomplete corner curves and the list of completed paths.
+        self.cornerNW = reflectionMatrix @ self.cornerNW
+        self.cornerNE = reflectionMatrix @ self.cornerNE
+        self.cornerSW = reflectionMatrix @ self.cornerSW
+        self.cornerSE = reflectionMatrix @ self.cornerSE
+        self.paths = [reflectionMatrix @ path for path in self.paths]
+        
+        return
+    
+    def __add__(self, n):
+        
+        if not isinstance(n, int):
+            raise Exception("Cannot add non-integer values to a tangle.")
+        if n < 0:
+            raise Exception("Negative twists have not been added yet.")
+            
+        for i in range(n):
+            self.addTwist()
+            
+        return self
+    
+    def __mul__(self, n):
+        
+        if not isinstance(n, int):
+            raise Exception("Cannot multiply tangles by non-integer values.")
+        if n < 0:
+            raise Exception("Negative products have not been added yet.")
+    
+        if self.crossingIndex != 0:
+            self.NW_SE_reflection()
+        return self + n
+
+
+
 ### Knot Implementation: #######################################################
 
-class Knot3D:
+class Knot3D(Tangle3D):
     """ A class that transforms the Conway notation of knots into curves embeded
         on the unit sphere.
         
@@ -100,104 +198,19 @@ class Knot3D:
         """
         
         self.code = code
-        self.alpha = alpha
-        self.crossingAngle = crossingAngle
-
-        self.paths = []
-        self.NW_SE_flip = np.diag([1,1,1,-1])
+        numCrossings = sum(code)
+        rotationStep = 2 * np.pi / numCrossings
+        super().__init__(rotationStep, alpha=alpha, crossingAngle=crossingAngle)
         
-        self.crossingIndex = 0
-        self.rotationStep = (2*np.pi/sum(code))
-        
-        self.constructPoints()
-    
-    def addOne(self):
-        """ A helper function that adds an additional twist (or crossing) to the
-            knot.
-
-            Each new crossing is placed at (cos(i * 2pi/n), sin(i*2pi/n), 0)
-            where i is the number of crossings made so far and n is the total
-            number of crossings to be added. 
-        """
-        
-        # Obtain the position of the crossing:
-        t = (self.crossingIndex)*self.rotationStep
-        SWNE_cross = np.array([[np.cos(t), np.sin(t), 0,  1]]).T
-        NWSE_cross = np.array([[np.cos(t), np.sin(t), 0, -1]]).T
-        
-        # Obtain the positions of the control points:
-        t2 = (self.crossingIndex+self.alpha/2)* self.rotationStep
-        controlDist_upper = np.array([[np.cos(t2), np.sin(t2), 0,  1]]).T
-        controlDist_lower = np.array([[np.cos(t2), np.sin(t2), 0, -1]]).T
-
-        rot180         = rotMatrix(SWNE_cross,  np.pi               )
-        rotCrossing    = rotMatrix(SWNE_cross,  self.crossingAngle/2)
-        rotCrossingNeg = rotMatrix(SWNE_cross, -self.crossingAngle/2)
-        
-        NE_cont = rotCrossing @ controlDist_upper
-        SW_cont = rot180 @ NE_cont
-        
-        SE_cont = rotCrossingNeg @ controlDist_lower
-        NW_cont = rot180 @ SE_cont        
-        
-        # Modify the paths used within the knot
-        if self.crossingIndex == 0:
-            self.cornerSW = np.hstack((NWSE_cross, SW_cont))
-            self.cornerNW = np.hstack((SWNE_cross, NW_cont))
-        else:            
-            self.paths += [ np.hstack( (self.cornerNE, NW_cont, SWNE_cross) ) ]
-            self.paths += [ np.hstack( (self.cornerSE, SW_cont, NWSE_cross) ) ]
-        
-        self.cornerNE = np.hstack( (NWSE_cross, NE_cont) )
-        self.cornerSE = np.hstack( (SWNE_cross, SE_cont) )
-
-        self.crossingIndex += 1
-        
-        return
-    
-
-
-    def timesZero(self):
-        """ A helper function that reflects the current knot across the NW-SE
-            diagonal axis.
-        """
-        
-        # Swap NE and SW corners:
-        self.cornerNE, self.cornerSW = self.cornerSW, self.cornerNE
-        
-        # Obtain matrix that flips points along the "main" (NW-SE) diagonal.
-        theta = (self.crossingIndex-1)/2 * self.rotationStep
-        centerAxis = np.array([[np.cos(theta), np.sin(theta), 0, 0]]).T
-        reflectionAxis = rotMatrix(centerAxis, -np.pi/4) @ np.array([[0,0,1,0]]).T
-        reflectionMatrix = np.eye(4) - 2 * reflectionAxis @ reflectionAxis.T
-        
-        # Modify the incomplete corner curves and the list of completed paths.
-        self.cornerNW = reflectionMatrix @ self.cornerNW
-        self.cornerNE = reflectionMatrix @ self.cornerNE
-        self.cornerSW = reflectionMatrix @ self.cornerSW
-        self.cornerSE = reflectionMatrix @ self.cornerSE
-        self.paths = [reflectionMatrix @ path for path in self.paths]
-        
-        return
-    
-    def constructPoints(self):
-        """ Constructs the knot based off of the recorded Conway code.
-        """
-        
-        # Construct the knot:
         for t in self.code:
-            for i in range(t):
-                self.addOne()
-            self.timesZero()
-        self.timesZero()
-
-        # Connect the ends of the paths together:
+            self *= t
+        
         self.paths += [np.hstack((self.cornerNE, self.cornerNW[:,::-1]))]
         self.paths += [np.hstack((self.cornerSE, self.cornerSW[:,::-1]))]
-    
+        
         return
-
-
+    
+    
 
 ### Example Usage: #############################################################
 
@@ -209,7 +222,6 @@ code = [2,1,4,2]
 
 k = Knot3D(code, crossingAngle=1.0, alpha=1)
 
-
 fig = plt.figure()
 ax = plt.axes(projection='3d')
 
@@ -217,7 +229,7 @@ t = np.linspace(0,1, 50)
 for i in range(len(k.paths)):
     path = k.paths[i]
     altPath = sphereBezier(path[:3], t) 
-    altPath *= 1 + (0.03 * np.cos(t * np.pi) * path[3,0])
+    altPath *= 1 + (0.05 * np.cos(t * np.pi) * path[3,0])
 
 
     ax.plot(altPath[0], altPath[1], altPath[2], linewidth=3, color="black")
